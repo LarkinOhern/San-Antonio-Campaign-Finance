@@ -1,0 +1,315 @@
+---
+title: "City Council District 1 Campaign Contributions"
+author: "Larkin O'Hern"
+date: "January 24, 2017"
+output: html_document
+---
+
+
+```{r setup, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+
+###load packages
+library(tidyverse)
+library(lubridate)
+library(forcats)
+library(knitr)
+library(stringr)
+
+###read in the data 
+
+raw_data<-"dist1_contribution_report_jan2017.csv" ###insert file name here
+
+campaign_finance<-as_tibble(read.csv(raw_data))
+
+```
+
+```{r, echo=FALSE, include=FALSE, message=F, warning=F}
+
+campaign_finance1<-na.omit(campaign_finance) ###na.omit() to drop empty rows created by the two line adresses
+
+
+campaign_finance2<-campaign_finance1 %>% ###this will be our primary tibble going forward
+        select(-Report.Id.,-FilerName, -Report.Type.Code.,-Count.) %>% #drop vars that don't add value
+        rename(contributor=Name., #fix names
+               contact_type=Contact.Type.,
+               report_type=Report.Type.,
+               amount=Amount.,
+               contrib_type=strVal,
+               candidate=Cand.Committee.,
+               election_date=Election.Date.,
+               transaction_id=Id,
+               report_id=ReportId,
+               transaction_date=TransDate.,
+               report_date=CreatedDt.) %>% 
+        separate(transaction_date, into=c("transaction_date","time"), sep=" ") %>% #get dates as dates
+        select(-time) %>% 
+        mutate(transaction_date=mdy(transaction_date)) %>% 
+        separate(report_date, into=c("report_date","time"), sep=" ") %>% 
+        select(-time) %>% 
+        mutate(report_date=mdy(report_date),
+               report_id=factor(report_id),
+               transaction_id=factor(transaction_id)
+               ) %>% 
+        separate(contributor, into=c("last_name","first_name"), sep=",") %>%  #first name na means PAC
+        mutate(contact_type=ifelse(is.na(first_name),"PAC","INDV")) #create a var to id PACs and individuals
+
+```
+```{r echo=FALSE, warning=FALSE, message=F}
+#this is a "mode" subsitute function 
+most_common<-function(x){
+        ux<-unique(x)
+        ux[which.max(tabulate(match(x,ux)))]
+}
+
+#this section fixes the problem created when adresses were read in as two new rows in the Name. column
+campaign_finance1a<- campaign_finance%>% 
+        separate(Name., into=c("last_name","first_name"), sep=",")
+        
+        
+adress<-str_subset(campaign_finance1a$last_name,"\\d")        
+
+zipcode<-(str_subset(campaign_finance1a$first_name,"\\d"))
+
+zipcode1<-as_tibble(trimws(zipcode)) 
+
+zipcode1<-separate(zipcode1,value, into=c("state", "zipcode"), sep ="    ") #create new state var. I'm suprised at the number of out of state contributions for a mayoral race.
+
+campaign_finance2a<-as_tibble(cbind(adress,zipcode1, campaign_finance2)) #this will be the primary tibble for geo data.
+        
+unique_adresses<-length(unique(as.character(campaign_finance2a$adress))) #thi will id unique donor families
+
+unique_indv_contributors<-distinct(campaign_finance2a, adress, first_name,last_name, contact_type, candidate) %>% 
+        filter(contact_type=="INDV") %>% 
+        nrow()
+
+        
+contributing_households<-distinct(campaign_finance2a, adress, contact_type) %>% 
+        filter(contact_type=="INDV") %>% 
+        nrow()
+
+multi_givers<-select(campaign_finance2a, adress, last_name, first_name, contact_type, amount, candidate) %>% 
+        filter(contact_type=="INDV") %>% 
+        group_by(first_name, last_name, adress) %>% 
+        summarize(n=n(),
+                  total=sum(amount),
+                  mode=most_common(amount)) %>% 
+        filter(n>=2) %>% 
+        arrange(-total)
+
+over_maxers<-multi_givers %>% 
+        filter(total>1000) %>% 
+        left_join(campaign_finance2a) ###it appears Victoria Rico has cotributed above the $1000 limit 
+                                        ###to Mayor Ivy
+        
+give_to_two_canidates<-select(campaign_finance2a, adress, last_name, first_name, contact_type, amount, candidate) %>% 
+        group_by(first_name, last_name, adress) %>% 
+        summarize(n=n(),
+                  total=sum(amount),
+                  mode=most_common(amount)) %>% 
+        filter(n>=2) %>% 
+        left_join(campaign_finance2a) %>%   
+        select(adress, last_name, first_name, contact_type, amount, candidate)
+        
+
+
+
+
+candidate_summary<-campaign_finance2 %>% 
+        group_by(candidate) %>% 
+        summarise(total=sum(amount),
+                  n=n(),
+                  mean=mean(amount),
+                  median=median(amount),
+                  mode=most_common(amount),
+                  max=max(amount),
+                  min=min(amount)
+                  ) %>% 
+        arrange(-total)
+```
+### The Data
+
+```{r echo=FALSE}
+num_candidates=(length(levels(campaign_finance2$candidate)))-1 #ugly way to eliminate the 0 candidate need a dplyr drop()
+
+cand1<-levels(campaign_finance2$candidate)[2]
+cand2<-levels(campaign_finance2$candidate)[3]
+cand3<-levels(campaign_finance2$candidate)[4]
+
+contrib_type_table<-table(campaign_finance2$contact_type)
+
+first_contribution<-head(sort(campaign_finance2$transaction_date),1)[1]
+last_contribution<-tail(sort(campaign_finance2$transaction_date),1)[1]
+num_contributions<-length(campaign_finance2$candidate) ###neeed to eliminate duplicates
+num_indv_contributors<-contrib_type_table[1]
+num_pacs<-contrib_type_table[2]
+total_contributions<-sum(campaign_finance2$amount)
+
+options(scipen = 5, digits = 3  )
+
+```
+
+This data for this report is available here: and is up to date as of  **`r campaign_finance2$report_date[1]`**.  At that time there were **`r num_candidates`** candidates: **`r cand1`**, 
+**`r cand2`** and **`r cand3`**.  The report included data on **`r num_contributions`** contributions from **`r num_indv_contributors`** individual contributors and **`r num_pacs`** Political Action Committees worth **$`r total_contributions`** recorded between **`r first_contribution`** and **`r last_contribution`**.
+
+### PACs vs. Individuals (Families?)
+```{r echo=FALSE}
+pacs_v_indv<-campaign_finance2 %>% 
+        group_by(contact_type) %>% 
+        summarize(total=sum(amount),
+                  mean=mean(amount),
+                  median=median(amount),
+                  mode=most_common(amount),
+                  max=max(amount),
+                  min=min(amount)
+                  )
+
+kable(pacs_v_indv, digits=2, format.args=list(big.mark=","))
+
+```
+
+
+Individual donors outspent PACs **$ `r pacs_v_indv[1,2]`** to **$`r pacs_v_indv[2,2]`** but the average  PAC gave significantly more- **$`r pacs_v_indv[2,3]`** to **$`r pacs_v_indv[1,3]`** (mean) and **$`r pacs_v_indv[2,3]`** to **$`r pacs_v_indv[1,3]`** (median).  The most common individual contribution was **$`r pacs_v_indv[1,5]`** while the most common PAC contribution was **$`r pacs_v_indv[2,5]`**. See Appendix A for a list of all PAC contributions. 
+
+Thus far **`r unique_indv_contributors`** individuals from **`r contributing_households`** households have made contributions. **`r nrow(multi_givers)`** individuals have made more than one contribution.  
+```{r, echo=FALSE}
+
+ggplot(campaign_finance2, aes(x=contact_type, y=amount))+
+        geom_violin()+
+        geom_boxplot(width=.1, fill="black")+
+        stat_summary(fun.y=mean, geom = "point", fill="white", size=2.5, shape=21)+
+        xlab("Type of Contributor")+ylab("Contribution Amount ($)")+ggtitle("Distribution of  Contribution Amounts by Contributor Type")
+
+```
+
+##The Candidates
+
+```{r, echo=F, include=T}
+
+
+ggplot(campaign_finance2, aes(x=candidate, y=amount))+
+        geom_violin()+
+        #geom_boxplot(width=.01, fill="black")+
+        stat_summary(fun.y=mean, geom = "point", fill="black", size=2, shape=21)+
+        xlab("Candidate")+ylab("Contribution Amount ($)")+ggtitle("Distribution of Contribution Amounts by Candidate")
+
+kable(candidate_summary, digits=2, format.args=list(big.mark=","))
+
+
+contributions_over_time<-campaign_finance2 %>% 
+        mutate(candidate=fct_reorder(candidate, -amount)) %>% 
+        group_by(candidate, transaction_date) %>% 
+        summarize(daily_total=sum(amount)) %>% 
+        mutate(running_total=cumsum(daily_total))
+
+ggplot(contributions_over_time, aes(x=transaction_date, y=running_total, color=candidate))+ geom_line()+xlab("Date")+ylab("Total Contributions ($)")+ggtitle("Total Contributions From 01 July-31 DEC 2016")+theme(legend.position="bottom")+labs(color="")
+
+maxers<-campaign_finance2 %>%
+        filter(amount==1000) %>% 
+        group_by(candidate, contact_type) %>%
+        summarize(maxers=n())
+
+pac_giving<-campaign_finance2 %>% 
+        group_by(candidate, contact_type) %>% 
+        summarise(pac_contributors=n()) %>% 
+        filter(contact_type=="PAC") %>% 
+        select(-contact_type) %>% 
+        arrange(-pac_contributors)
+
+giving_by_zipcode<-campaign_finance2a %>% 
+        group_by(candidate, zipcode) %>% 
+        summarise(total=sum(amount),
+                  mean=mean(amount),
+                  n=n()) %>% 
+        arrange(-total) %>% 
+        left_join(candidate_summary, by="candidate") %>% 
+        select(-median, -mode,-min,-max) %>%
+        mutate(percent=(total.x/total.y)*100,
+               rank=min_rank(desc(total.x))) %>% 
+        filter(rank<=10)
+        
+ggplot(giving_by_zipcode)+
+        geom_bar(aes(x=reorder(zipcode,total.x),y=total.x, fill=fct_reorder(candidate, total.y)), stat="identity")+
+        facet_wrap(~candidate)+
+        coord_flip()+
+        ylab("Total Contributions ($)")+xlab("Zip Code")+ggtitle("Contributions by Zip Code")+
+        scale_fill_discrete(guide=F)
+
+
+family_giving<-campaign_finance2a %>% 
+        group_by(adress, state, zipcode, last_name, candidate) %>% 
+        summarize(n=n(),
+                  total_giving=sum(amount)) %>% 
+        arrange(-total_giving) %>% 
+        filter(n>=2)
+
+
+out_of_state_giving_by_state<-campaign_finance2a %>%
+        filter(state!="TX") %>% 
+        group_by(candidate, state) %>% 
+        summarize(total=sum(amount),
+                  mean=mean(amount),
+                  n=n()) %>% 
+        arrange(-total)
+
+out_of_state_giving_totals<-campaign_finance2a %>%
+        filter(state!="TX") %>% 
+        group_by(candidate, contact_type) %>% 
+        summarize(total=sum(amount),
+                  mean=mean(amount),
+                  n=n()) %>% 
+        arrange(-total) %>% 
+        left_join(candidate_summary, by="candidate") %>% 
+        select(candidate:total.y) %>% 
+        rename(total=total.x, mean=mean.x, n=n.x,grand_total=total.y) %>% 
+        mutate(percent_grand_total=(total/grand_total)*100)
+```
+
+
+*Total Out of State Donations:*
+`r kable(out_of_state_giving_totals, digits=2, format.args=list(big.mark=","))`
+
+*Out of State Donations By State:*
+`r kable(out_of_state_giving_by_state, digits=2, format.args=list(big.mark=","))`
+
+```{r, echo=FALSE}
+
+kable(maxers,digits=2, format.args=list(big.mark=","))
+
+kable(pac_giving,digits=2, format.args=list(big.mark=","))
+
+```
+
+### Contributions by Type (Monetary vs. In-Kind)
+
+```{r, echo=FALSE}
+
+###lets look at contribution types 
+
+contrib_type_by_candidate<-campaign_finance2 %>% 
+        group_by(candidate,contact_type, contrib_type) %>% 
+        summarize(total=sum(amount),
+                  mean=mean(amount),
+                  n=n()) %>% 
+        arrange(-total)
+
+ggplot(contrib_type_by_candidate, aes(x=candidate, y=total, fill=contrib_type))+
+        geom_bar(stat="identity",position = "dodge")+guides(fill=FALSE)
+
+kable(contrib_type_by_candidate, digits=2, format.args=list(big.mark=",") )
+
+```
+
+##Appendix A-PAC Contributions 
+```{r, echo=FALSE, include=TRUE}
+
+pac_contributions<-campaign_finance2 %>% 
+        filter(contact_type=="PAC") %>% 
+        select(last_name, amount, candidate) %>% 
+        arrange(candidate, -amount)
+
+
+
+kable(pac_contributions, digits=2, format.args=list(big.mark=","))
+        
+```
+        
